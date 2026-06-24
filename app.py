@@ -133,10 +133,18 @@ def register():
         row = _one(conn, "SELECT * FROM users WHERE handle = %s", (handle,))
         session["user_id"] = row["id"]
         return jsonify({"message": "Registered", "user": user_to_dict(row)}), 201
-    except Exception as e:
-        if "unique" in str(e).lower():
-            return jsonify({"error": "Handle already taken"}), 409
-        return jsonify({"error": "Registration failed"}), 500
+   except Exception as e:
+    conn.rollback()
+
+    error_text = str(e).lower()
+
+    if "duplicate" in error_text or "unique" in error_text:
+        return jsonify({"error": "Handle already taken"}), 409
+
+    return jsonify({
+        "error": "Registration failed",
+        "debug": str(e)
+    }), 500
     finally:
         conn.close()
 
