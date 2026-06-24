@@ -108,6 +108,7 @@ def process_avatar(file_bytes, original_filename):
 
 @app.route("/register", methods=["POST"])
 def register():
+    print("REGISTER HIT")
     data = request.get_json(force=True)
     display_name = (data.get("display_name") or "").strip()
     handle = (data.get("handle") or "").strip().lstrip("@")
