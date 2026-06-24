@@ -106,6 +106,10 @@ def process_avatar(file_bytes, original_filename):
 
 # ── Auth ────────────────────────────────────────────────────────────────────
 
+@app.route("/")
+def home():
+    return "Armedia API online"
+
 @app.route("/register", methods=["POST"])
 def register():
     data = request.get_json(force=True)
