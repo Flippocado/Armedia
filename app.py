@@ -108,8 +108,8 @@ def process_avatar(file_bytes, original_filename):
 
 @app.route("/register", methods=["POST"])
 def register():
-    print("REGISTER HIT")
     data = request.get_json(force=True)
+
     display_name = (data.get("display_name") or "").strip()
     handle = (data.get("handle") or "").strip().lstrip("@")
     password = data.get("password") or ""
@@ -118,36 +118,36 @@ def register():
     if not display_name:
         return jsonify({"error": "Display name is required"}), 400
     if not handle or not validate_handle(handle):
-        return jsonify({"error": "Handle must be 3-32 characters (letters, numbers, underscores)"}), 400
+        return jsonify({"error": "Invalid handle"}), 400
     if len(password) < 6:
-        return jsonify({"error": "Password must be at least 6 characters"}), 400
+        return jsonify({"error": "Password too short"}), 400
 
     pw_hash = generate_password_hash(password)
     conn = get_db()
+
     try:
-        _run(conn,
+        _run(
+            conn,
             "INSERT INTO users (display_name, handle, email, password_hash) VALUES (%s, %s, %s, %s)",
             (display_name, handle, email, pw_hash),
         )
         conn.commit()
+
         row = _one(conn, "SELECT * FROM users WHERE handle = %s", (handle,))
         session["user_id"] = row["id"]
-        return jsonify({"message": "Registered", "user": user_to_dict(row)}), 201
-   except Exception as e:
-    conn.rollback()
 
-    error_text = str(e).lower()
+        return jsonify({
+            "message": "Registered",
+            "user": user_to_dict(row)
+        }), 201
 
-    if "duplicate" in error_text or "unique" in error_text:
-        return jsonify({"error": "Handle already taken"}), 409
+    except Exception as e:
+        if "unique" in str(e).lower():
+            return jsonify({"error": "Handle already taken"}), 409
+        return jsonify({"error": "Registration failed"}), 500
 
-    return jsonify({
-        "error": "Registration failed",
-        "debug": str(e)
-    }), 500
     finally:
         conn.close()
-
 
 @app.route("/login", methods=["POST"])
 def login():
