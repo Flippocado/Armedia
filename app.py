@@ -9,6 +9,28 @@ from PIL import Image
 
 import database
 
+
+def _exec(conn, sql, params=()):
+    cur = conn.cursor()
+    cur.execute(sql, params)
+    return cur
+
+def _one(conn, sql, params=()):
+    cur = _exec(conn, sql, params)
+    return cur.fetchone()
+
+def _all(conn, sql, params=()):
+    cur = _exec(conn, sql, params)
+    return cur.fetchall()
+
+def _run(conn, sql, params=()):
+    _exec(conn, sql, params)
+
+def _insert(conn, sql, params=()):
+    cur = _exec(conn, sql + " RETURNING id", params)
+    return cur.fetchone()["id"]
+
+
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-in-production")
 CORS(app, supports_credentials=True)
@@ -102,16 +124,16 @@ def register():
     pw_hash = generate_password_hash(password)
     conn = get_db()
     try:
-        conn.execute(
-            "INSERT INTO users (display_name, handle, email, password_hash) VALUES (?, ?, ?, ?)",
+        _run(conn,
+            "INSERT INTO users (display_name, handle, email, password_hash) VALUES (%s, %s, %s, %s)",
             (display_name, handle, email, pw_hash),
         )
         conn.commit()
-        row = conn.execute("SELECT * FROM users WHERE handle = ?", (handle,)).fetchone()
+        row = _one(conn, "SELECT * FROM users WHERE handle = %s", (handle,))
         session["user_id"] = row["id"]
         return jsonify({"message": "Registered", "user": user_to_dict(row)}), 201
     except Exception as e:
-        if "UNIQUE constraint" in str(e):
+        if "unique" in str(e).lower():
             return jsonify({"error": "Handle already taken"}), 409
         return jsonify({"error": "Registration failed"}), 500
     finally:
@@ -125,7 +147,7 @@ def login():
     password = data.get("password") or ""
     conn = get_db()
     try:
-        row = conn.execute("SELECT * FROM users WHERE handle = ?", (handle,)).fetchone()
+        row = _one(conn, "SELECT * FROM users WHERE handle = %s", (handle,))
         if not row or not check_password_hash(row["password_hash"], password):
             return jsonify({"error": "Invalid handle or password"}), 401
         session["user_id"] = row["id"]
@@ -149,7 +171,7 @@ def get_account():
         return err
     conn = get_db()
     try:
-        row = conn.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
+        row = _one(conn, "SELECT * FROM users WHERE id = %s", (uid,))
         if not row:
             return jsonify({"error": "User not found"}), 404
         return jsonify(user_to_dict(row))
@@ -165,7 +187,7 @@ def update_account():
     data = request.get_json(force=True)
     conn = get_db()
     try:
-        current = conn.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
+        current = _one(conn, "SELECT * FROM users WHERE id = %s", (uid,))
         if not current:
             return jsonify({"error": "User not found"}), 404
 
@@ -187,15 +209,15 @@ def update_account():
         else:
             pw_hash = current["password_hash"]
 
-        conn.execute(
-            "UPDATE users SET display_name=?, handle=?, email=?, password_hash=? WHERE id=?",
+        _run(conn,
+            "UPDATE users SET display_name=%s, handle=%s, email=%s, password_hash=%s WHERE id=%s",
             (display_name, handle, email, pw_hash, uid),
         )
         conn.commit()
-        updated = conn.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
+        updated = _one(conn, "SELECT * FROM users WHERE id = %s", (uid,))
         return jsonify({"message": "Updated", "user": user_to_dict(updated)})
     except Exception as e:
-        if "UNIQUE constraint" in str(e):
+        if "unique" in str(e).lower():
             return jsonify({"error": "Handle already taken"}), 409
         return jsonify({"error": "Update failed"}), 500
     finally:
@@ -210,7 +232,7 @@ def delete_account():
     data = request.get_json(force=True)
     conn = get_db()
     try:
-        row = conn.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
+        row = _one(conn, "SELECT * FROM users WHERE id = %s", (uid,))
         if not row:
             return jsonify({"error": "User not found"}), 404
         if not check_password_hash(row["password_hash"], data.get("password", "")):
@@ -219,7 +241,7 @@ def delete_account():
             pic_path = os.path.join(UPLOAD_FOLDER, row["profile_picture"])
             if os.path.exists(pic_path):
                 os.remove(pic_path)
-        conn.execute("DELETE FROM users WHERE id = ?", (uid,))
+        _run(conn, "DELETE FROM users WHERE id = %s", (uid,))
         conn.commit()
         session.clear()
         return jsonify({"message": "Account deleted"})
@@ -248,12 +270,12 @@ def upload_avatar():
         f.write(result)
     conn = get_db()
     try:
-        old = conn.execute("SELECT profile_picture FROM users WHERE id = ?", (uid,)).fetchone()
+        old = _one(conn, "SELECT profile_picture FROM users WHERE id = %s", (uid,))
         if old and old["profile_picture"]:
             old_path = os.path.join(UPLOAD_FOLDER, old["profile_picture"])
             if os.path.exists(old_path):
                 os.remove(old_path)
-        conn.execute("UPDATE users SET profile_picture = ? WHERE id = ?", (filename, uid))
+        _run(conn, "UPDATE users SET profile_picture = %s WHERE id = %s", (filename, uid))
         conn.commit()
         return jsonify({"message": "Avatar uploaded", "filename": filename, "avatar_url": f"/avatar/image/{filename}"})
     finally:
@@ -267,12 +289,12 @@ def remove_avatar():
         return err
     conn = get_db()
     try:
-        row = conn.execute("SELECT profile_picture FROM users WHERE id = ?", (uid,)).fetchone()
+        row = _one(conn, "SELECT profile_picture FROM users WHERE id = %s", (uid,))
         if row and row["profile_picture"]:
             pic_path = os.path.join(UPLOAD_FOLDER, row["profile_picture"])
             if os.path.exists(pic_path):
                 os.remove(pic_path)
-        conn.execute("UPDATE users SET profile_picture = NULL WHERE id = ?", (uid,))
+        _run(conn, "UPDATE users SET profile_picture = NULL WHERE id = %s", (uid,))
         conn.commit()
         return jsonify({"message": "Avatar removed"})
     finally:
@@ -297,10 +319,10 @@ def search_users():
     conn = get_db()
     try:
         pattern = f"%{query}%"
-        rows = conn.execute(
-            "SELECT * FROM users WHERE (handle LIKE ? OR display_name LIKE ?) AND id != ? LIMIT 20",
+        rows = _all(conn,
+            "SELECT * FROM users WHERE (handle LIKE %s OR display_name LIKE %s) AND id != %s LIMIT 20",
             (pattern, pattern, uid),
-        ).fetchall()
+        )
         return jsonify([user_to_dict(r) for r in rows])
     finally:
         conn.close()
@@ -313,7 +335,7 @@ def get_user(target_id):
         return err
     conn = get_db()
     try:
-        row = conn.execute("SELECT * FROM users WHERE id = ?", (target_id,)).fetchone()
+        row = _one(conn, "SELECT * FROM users WHERE id = %s", (target_id,))
         if not row:
             return jsonify({"error": "User not found"}), 404
         return jsonify(user_to_dict(row))
@@ -330,18 +352,18 @@ def list_chats():
         return err
     conn = get_db()
     try:
-        rows = conn.execute(
+        rows = _all(conn,
             """
             SELECT DISTINCT
-                CASE WHEN sender_id = ? THEN receiver_id ELSE sender_id END AS other_id
+                CASE WHEN sender_id = %s THEN receiver_id ELSE sender_id END AS other_id
             FROM private_messages
-            WHERE sender_id = ? OR receiver_id = ?
+            WHERE sender_id = %s OR receiver_id = %s
             """,
             (uid, uid, uid),
-        ).fetchall()
+        )
         result = []
         for r in rows:
-            other = conn.execute("SELECT * FROM users WHERE id = ?", (r["other_id"],)).fetchone()
+            other = _one(conn, "SELECT * FROM users WHERE id = %s", (r["other_id"],))
             if other:
                 result.append(user_to_dict(other))
         return jsonify(result)
@@ -361,11 +383,11 @@ def send_message():
         return jsonify({"error": "receiver_id and message required"}), 400
     conn = get_db()
     try:
-        target = conn.execute("SELECT id FROM users WHERE id = ?", (receiver_id,)).fetchone()
+        target = _one(conn, "SELECT id FROM users WHERE id = %s", (receiver_id,))
         if not target:
             return jsonify({"error": "Recipient not found"}), 404
-        conn.execute(
-            "INSERT INTO private_messages (sender_id, receiver_id, message) VALUES (?, ?, ?)",
+        _run(conn,
+            "INSERT INTO private_messages (sender_id, receiver_id, message) VALUES (%s, %s, %s)",
             (uid, receiver_id, message),
         )
         conn.commit()
@@ -384,17 +406,17 @@ def chat_history():
         return jsonify({"error": "Missing 'with' parameter"}), 400
     conn = get_db()
     try:
-        rows = conn.execute(
+        rows = _all(conn,
             """
             SELECT pm.*, u.display_name, u.handle, u.profile_picture
             FROM private_messages pm
             JOIN users u ON u.id = pm.sender_id
-            WHERE (pm.sender_id = ? AND pm.receiver_id = ?)
-               OR (pm.sender_id = ? AND pm.receiver_id = ?)
+            WHERE (pm.sender_id = %s AND pm.receiver_id = %s)
+               OR (pm.sender_id = %s AND pm.receiver_id = %s)
             ORDER BY pm.timestamp ASC
             """,
             (uid, other_id, other_id, uid),
-        ).fetchall()
+        )
         result = []
         for r in rows:
             d = dict(r)
@@ -414,22 +436,22 @@ def list_groups():
         return err
     conn = get_db()
     try:
-        rows = conn.execute(
+        rows = _all(conn,
             """
             SELECT g.*, u.display_name AS owner_name, u.handle AS owner_handle
             FROM groups g
             JOIN users u ON u.id = g.owner_id
             """,
-        ).fetchall()
+        )
         result = []
         for r in rows:
             d = dict(r)
-            member_count = conn.execute(
-                "SELECT COUNT(*) AS c FROM group_members WHERE group_id = ?", (d["id"],)
-            ).fetchone()["c"]
-            is_member = conn.execute(
-                "SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?", (d["id"], uid)
-            ).fetchone()
+            member_count = _one(conn, 
+                "SELECT COUNT(*) AS c FROM group_members WHERE group_id = %s", (d["id"],)
+            )["c"]
+            is_member = _one(conn, 
+                "SELECT 1 FROM group_members WHERE group_id = %s AND user_id = %s", (d["id"], uid)
+            )
             d["member_count"] = member_count
             d["is_member"] = bool(is_member)
             result.append(d)
@@ -449,9 +471,8 @@ def create_group():
         return jsonify({"error": "Group name required"}), 400
     conn = get_db()
     try:
-        cur = conn.execute("INSERT INTO groups (name, owner_id) VALUES (?, ?)", (name, uid))
-        group_id = cur.lastrowid
-        conn.execute("INSERT INTO group_members (group_id, user_id) VALUES (?, ?)", (group_id, uid))
+        group_id = _insert(conn, "INSERT INTO groups (name, owner_id) VALUES (%s, %s)", (name, uid))
+        _run(conn, "INSERT INTO group_members (group_id, user_id) VALUES (%s, %s)", (group_id, uid))
         conn.commit()
         return jsonify({"message": "Group created", "group_id": group_id}), 201
     finally:
@@ -469,15 +490,15 @@ def join_group():
         return jsonify({"error": "group_id required"}), 400
     conn = get_db()
     try:
-        group = conn.execute("SELECT id FROM groups WHERE id = ?", (group_id,)).fetchone()
+        group = _one(conn, "SELECT id FROM groups WHERE id = %s", (group_id,))
         if not group:
             return jsonify({"error": "Group not found"}), 404
-        existing = conn.execute(
-            "SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?", (group_id, uid)
-        ).fetchone()
+        existing = _one(conn, 
+            "SELECT 1 FROM group_members WHERE group_id = %s AND user_id = %s", (group_id, uid)
+        )
         if existing:
             return jsonify({"message": "Already a member"})
-        conn.execute("INSERT INTO group_members (group_id, user_id) VALUES (?, ?)", (group_id, uid))
+        _run(conn, "INSERT INTO group_members (group_id, user_id) VALUES (%s, %s)", (group_id, uid))
         conn.commit()
         return jsonify({"message": "Joined group"})
     finally:
@@ -493,8 +514,8 @@ def leave_group():
     group_id = data.get("group_id")
     conn = get_db()
     try:
-        conn.execute(
-            "DELETE FROM group_members WHERE group_id = ? AND user_id = ?", (group_id, uid)
+        _run(conn,
+            "DELETE FROM group_members WHERE group_id = %s AND user_id = %s", (group_id, uid)
         )
         conn.commit()
         return jsonify({"message": "Left group"})
@@ -509,14 +530,14 @@ def group_members(group_id):
         return err
     conn = get_db()
     try:
-        rows = conn.execute(
+        rows = _all(conn,
             """
             SELECT u.* FROM users u
             JOIN group_members gm ON gm.user_id = u.id
-            WHERE gm.group_id = ?
+            WHERE gm.group_id = %s
             """,
             (group_id,),
-        ).fetchall()
+        )
         return jsonify([user_to_dict(r) for r in rows])
     finally:
         conn.close()
@@ -532,16 +553,16 @@ def group_messages():
         return jsonify({"error": "group_id required"}), 400
     conn = get_db()
     try:
-        rows = conn.execute(
+        rows = _all(conn,
             """
             SELECT gm.*, u.display_name, u.handle, u.profile_picture
             FROM group_messages gm
             JOIN users u ON u.id = gm.sender_id
-            WHERE gm.group_id = ?
+            WHERE gm.group_id = %s
             ORDER BY gm.timestamp ASC
             """,
             (group_id,),
-        ).fetchall()
+        )
         result = []
         for r in rows:
             d = dict(r)
@@ -564,13 +585,13 @@ def send_group_message():
         return jsonify({"error": "group_id and message required"}), 400
     conn = get_db()
     try:
-        member = conn.execute(
-            "SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?", (group_id, uid)
-        ).fetchone()
+        member = _one(conn, 
+            "SELECT 1 FROM group_members WHERE group_id = %s AND user_id = %s", (group_id, uid)
+        )
         if not member:
             return jsonify({"error": "Not a member of this group"}), 403
-        conn.execute(
-            "INSERT INTO group_messages (group_id, sender_id, message) VALUES (?, ?, ?)",
+        _run(conn,
+            "INSERT INTO group_messages (group_id, sender_id, message) VALUES (%s, %s, %s)",
             (group_id, uid, message),
         )
         conn.commit()
@@ -588,20 +609,20 @@ def list_forums():
         return err
     conn = get_db()
     try:
-        rows = conn.execute(
+        rows = _all(conn,
             """
             SELECT f.*, u.display_name AS creator_name, u.handle AS creator_handle
             FROM forums f
             JOIN users u ON u.id = f.creator_id
             ORDER BY f.created_at DESC
             """
-        ).fetchall()
+        )
         result = []
         for r in rows:
             d = dict(r)
-            thread_count = conn.execute(
-                "SELECT COUNT(*) AS c FROM threads WHERE forum_id = ?", (d["id"],)
-            ).fetchone()["c"]
+            thread_count = _one(conn, 
+                "SELECT COUNT(*) AS c FROM threads WHERE forum_id = %s", (d["id"],)
+            )["c"]
             d["thread_count"] = thread_count
             result.append(d)
         return jsonify(result)
@@ -620,9 +641,9 @@ def create_forum():
         return jsonify({"error": "Forum name required"}), 400
     conn = get_db()
     try:
-        cur = conn.execute("INSERT INTO forums (name, creator_id) VALUES (?, ?)", (name, uid))
+        forum_id = _insert(conn, "INSERT INTO forums (name, creator_id) VALUES (%s, %s)", (name, uid))
         conn.commit()
-        return jsonify({"message": "Forum created", "forum_id": cur.lastrowid}), 201
+        return jsonify({"message": "Forum created", "forum_id": forum_id}), 201
     finally:
         conn.close()
 
@@ -634,22 +655,22 @@ def list_threads(forum_id):
         return err
     conn = get_db()
     try:
-        rows = conn.execute(
+        rows = _all(conn,
             """
             SELECT t.*, u.display_name AS author_name, u.handle AS author_handle, u.profile_picture
             FROM threads t
             JOIN users u ON u.id = t.author_id
-            WHERE t.forum_id = ?
+            WHERE t.forum_id = %s
             ORDER BY t.created_at DESC
             """,
             (forum_id,),
-        ).fetchall()
+        )
         result = []
         for r in rows:
             d = dict(r)
-            reply_count = conn.execute(
-                "SELECT COUNT(*) AS c FROM forum_posts WHERE thread_id = ?", (d["id"],)
-            ).fetchone()["c"]
+            reply_count = _one(conn, 
+                "SELECT COUNT(*) AS c FROM forum_posts WHERE thread_id = %s", (d["id"],)
+            )["c"]
             d["reply_count"] = reply_count
             d["avatar_url"] = f"/avatar/image/{d['profile_picture']}" if d.get("profile_picture") else None
             result.append(d)
@@ -671,16 +692,15 @@ def create_thread():
         return jsonify({"error": "forum_id, title, and content required"}), 400
     conn = get_db()
     try:
-        forum = conn.execute("SELECT id FROM forums WHERE id = ?", (forum_id,)).fetchone()
+        forum = _one(conn, "SELECT id FROM forums WHERE id = %s", (forum_id,))
         if not forum:
             return jsonify({"error": "Forum not found"}), 404
-        cur = conn.execute(
-            "INSERT INTO threads (forum_id, author_id, title) VALUES (?, ?, ?)",
+        thread_id = _insert(conn,
+            "INSERT INTO threads (forum_id, author_id, title) VALUES (%s, %s, %s)",
             (forum_id, uid, title),
         )
-        thread_id = cur.lastrowid
-        conn.execute(
-            "INSERT INTO forum_posts (thread_id, author_id, content) VALUES (?, ?, ?)",
+        _run(conn,
+            "INSERT INTO forum_posts (thread_id, author_id, content) VALUES (%s, %s, %s)",
             (thread_id, uid, content),
         )
         conn.commit()
@@ -696,26 +716,26 @@ def get_thread(thread_id):
         return err
     conn = get_db()
     try:
-        thread = conn.execute(
+        thread = _one(conn,
             """
             SELECT t.*, u.display_name AS author_name, u.handle AS author_handle
             FROM threads t JOIN users u ON u.id = t.author_id
-            WHERE t.id = ?
+            WHERE t.id = %s
             """,
             (thread_id,),
-        ).fetchone()
+        )
         if not thread:
             return jsonify({"error": "Thread not found"}), 404
-        posts = conn.execute(
+        posts = _all(conn,
             """
             SELECT fp.*, u.display_name, u.handle, u.profile_picture
             FROM forum_posts fp
             JOIN users u ON u.id = fp.author_id
-            WHERE fp.thread_id = ?
+            WHERE fp.thread_id = %s
             ORDER BY fp.timestamp ASC
             """,
             (thread_id,),
-        ).fetchall()
+        )
         result_posts = []
         for p in posts:
             d = dict(p)
@@ -738,11 +758,11 @@ def reply_to_thread():
         return jsonify({"error": "thread_id and content required"}), 400
     conn = get_db()
     try:
-        thread = conn.execute("SELECT id FROM threads WHERE id = ?", (thread_id,)).fetchone()
+        thread = _one(conn, "SELECT id FROM threads WHERE id = %s", (thread_id,))
         if not thread:
             return jsonify({"error": "Thread not found"}), 404
-        conn.execute(
-            "INSERT INTO forum_posts (thread_id, author_id, content) VALUES (?, ?, ?)",
+        _run(conn,
+            "INSERT INTO forum_posts (thread_id, author_id, content) VALUES (%s, %s, %s)",
             (thread_id, uid, content),
         )
         conn.commit()

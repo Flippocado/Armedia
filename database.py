@@ -1,14 +1,14 @@
-import sqlite3
 import os
+import psycopg2
+import psycopg2.extras
 
-DB_PATH = os.environ.get("DB_PATH", "messenger.db")
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost/messenger")
 SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "schema.sql")
 
 
 def get_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
+    conn = psycopg2.connect(DATABASE_URL)
+    conn.cursor_factory = psycopg2.extras.RealDictCursor
     return conn
 
 
@@ -16,6 +16,7 @@ def init_db():
     with open(SCHEMA_PATH, "r") as f:
         schema = f.read()
     conn = get_connection()
-    conn.executescript(schema)
+    with conn.cursor() as cur:
+        cur.execute(schema)
     conn.commit()
     conn.close()

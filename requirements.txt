@@ -3,3 +3,4 @@ Flask-Cors==4.0.1
 Werkzeug==3.0.3
 Pillow==10.4.0
 gunicorn==22.0.0
+psycopg2-binary==2.9.9
